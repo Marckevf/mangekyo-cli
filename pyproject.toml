@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mangekyo"
+version = "1.0.0"
+description = "Attack surface reconnaissance and ML risk-scoring CLI"
+requires-python = ">=3.11"
+dependencies = [
+    "pandas",
+    "numpy",
+    "requests",
+    "scikit-learn",
+    "shap",
+    "joblib",
+    "python-dotenv",
+    "rich",
+    "pyyaml",
+]
+
+[project.scripts]
+mangekyo = "mangekyo.cli.main:app"
+
+[tool.setuptools.packages.find]
+where = ["src"]

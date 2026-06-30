@@ -1,0 +1,30 @@
+==================================================
+MANGEKYO MODEL EVALUATION REPORT
+==================================================
+
+BEST HYPERPARAMETERS
+------------------------------
+  max_depth         : None
+  n_estimators      : 100
+  min_samples_split : 2
+
+TEST SET PERFORMANCE
+------------------------------
+  MSE : 1.8538
+  R²  : 0.9975
+  Targets met (MSE<80, R²>0.90): YES
+
+TOP 10 SHAP FEATURE IMPORTANCES
+------------------------------
+   1. max_nvd_score                  17.2885
+   2. max_epss_score                 9.3769
+   3. max_base_exposure              2.8990
+   4. mean_nvd_score                 2.1461
+   5. kev_port_count                 1.8893
+   6. unique_service_count           0.9028
+   7. base_exposure_std              0.7732
+   8. port_count                     0.5944
+   9. log_port_count                 0.5706
+  10. nvd_zero_count                 0.2215
+
+==================================================

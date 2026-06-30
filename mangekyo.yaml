@@ -1,0 +1,85 @@
+# mangekyo.yaml
+# ─────────────────────────────────────────────────────────────────
+# Project Mangekyo -- policy rule overlay
+#
+# OPTIONAL FILE. If this file does not exist (or is empty), mangekyo
+# behaves exactly as it does today -- no rules apply.
+#
+# Rules run AFTER the ML model has scored a host. They can only:
+#   - RAISE a host's tier  (never lower it -- the model's tier is a floor)
+#   - SUPPRESS (hide) a host entirely
+#
+# They NEVER change risk_score, the model, the formula, or training data.
+# Every raised tier keeps the original model score/tier visible alongside
+# the rule that changed it.
+#
+# Tier order (low -> high): LOW < MEDIUM < HIGH < CRITICAL
+#
+# Each rule:
+#   name:   short label, shown in the policy override note
+#   when:   conditions -- ALL must match (AND)
+#   action: exactly one of force_tier / min_tier / suppress
+# ─────────────────────────────────────────────────────────────────
+
+performance:
+  # max_tier3_mappings controls how many live NVD API calls are made per host
+  # to resolve CVE -> CWE -> ATT&CK technique when neither the STIX bundle nor
+  # the KEV supplement already covers a CVE (Tier 3 fallback).
+  #
+  # Tradeoff:
+  #   Higher values -> more CVEs get ATT&CK technique mappings, but each
+  #     uncached call adds ~1-15s (depending on NVD API latency), so first-run
+  #     wall time grows linearly. Results are cached after the first call, so
+  #     only the very first scan of a new CVE set incurs the cost.
+  #   Lower values -> faster first runs; CVEs beyond the cap fall back to
+  #     "No ATT&CK mapping available" until they appear in a later cache fill.
+  #   0 -> disables Tier 3 entirely; all unmapped CVEs score without ATT&CK context.
+  #
+  # Default: 5 (balances ~5-75s first-run cost against mapping completeness).
+  max_tier3_mappings: 5
+
+rules:
+
+  # ── Type 1: force a tier when a specific port is open ──────────────
+  # Any host with port 3389 (RDP) open is treated as CRITICAL,
+  # no matter what the model predicted. RDP exposed to the internet
+  # is a severe finding on its own.
+  - name: "exposed RDP port"
+    when:
+      port: 3389
+    force_tier: CRITICAL
+
+  # ── Type 2: force a MINIMUM tier for a service/product ──────────────
+  # Any host running an RDP service -- matched against the service,
+  # product, or CPE string of any open port, not just port 3389 --
+  # is raised to at least HIGH. If the model already scored it
+  # CRITICAL, it stays CRITICAL (this is a floor, not a ceiling).
+  - name: "RDP service detected"
+    when:
+      service: rdp
+    min_tier: HIGH
+
+  # ── Type 3: combine a port AND a confidence condition ───────────────
+  # Port 8080 (common admin/proxy port) open AND the model's
+  # confidence in its score is LOW -> raise to at least MEDIUM.
+  # This flags "we're not sure, but this looks worth a look" cases
+  # that might otherwise get buried at LOW.
+  - name: "unconfirmed web admin port"
+    when:
+      port: 8080
+      confidence: LOW
+    min_tier: MEDIUM
+
+  # ── Type 4: suppress a host entirely ────────────────────────────────
+  # Known-safe internal router -- excluded from all output
+  # (table rows, JSON "hosts" array, and summary tier counts).
+  - name: "internal router (known safe)"
+    when:
+      host: 192.168.1.1
+    suppress: true
+
+  # You can also suppress a whole range with CIDR notation:
+  #  - name: "lab network (excluded)"
+  #    when:
+  #      host: 10.0.0.0/24
+  #    suppress: true

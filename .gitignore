@@ -1,0 +1,73 @@
+﻿# Project Mangekyo - .gitignore
+# Keeps secrets, model artifacts, caches, logs, and bulk data out of the repo.
+
+# -- Secrets / environment --
+.env
+.env.*
+!.env.example
+
+# -- Model artifacts --
+*.pkl
+
+# -- Caches --
+mitre_attack_cache.json
+kev_supplement_cache.json
+kev_cache.json
+
+# -- Databases --
+mangekyo_brain.db
+*.db
+
+# -- Logs --
+*.log
+
+# -- Python / virtualenvs --
+__pycache__/
+.venv/
+venv*/
+
+# -- Bulk data (training data / feature matrices) --
+final_feature_matrix.csv
+training_data_v2.csv
+training_data.csv
+metadata.csv
+
+# -- Training outputs --
+shap_summary.png
+
+# -- Internal development docs (not user-facing) --
+audit_findings.md
+mangekyo_session_writeup.md
+*.docx
+*.pdf
+
+# -- Backups & local tooling config --
+backups/
+.claude/
+
+# -- Generated / bulk data & dev artifacts (not for the repo) --
+xml_logs/synthetic/
+src/*.egg-info/
+test_score.py
+validation_report.txt
+Front end Mock Ups/
+*.png
+Documentation/
+scripts/auth_probe.py
+
+# -- Writeups / planning / session notes in the root --
+/*_writeup.md
+/*_session*.md
+/*_plan*.md
+
+# -- Root transfer copy (lives at scripts/README.md in the repo) --
+/scripts_README.md
+
+# -- Explicitly-named logs / artifacts (also covered by *.log / *.pkl) --
+collection_run*.log
+diversity_run*.log
+mitre_test.log
+retrain_validate.log
+test_score_run.log
+*_err.log
+model_pre_diversity.pkl

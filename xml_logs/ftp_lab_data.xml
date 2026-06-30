@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE nmaprun>
+<nmaprun scanner="nmap" args="nmap -sV -sC -A -oX Attacking_FTP_baseline.xml 10.129.10.128" start="1775878432" version="7.94SVN">
+<host starttime="1775878432" endtime="1775878506">
+<status state="up" reason="reset"/>
+<address addr="10.129.10.128" addrtype="ipv4"/>
+<ports>
+<port protocol="tcp" portid="22"><state state="open"/><service name="ssh" product="OpenSSH" version="8.2p1 Ubuntu 4ubuntu0.4" extrainfo="Ubuntu Linux" ostype="Linux"/></port>
+<port protocol="tcp" portid="53"><state state="open"/><service name="domain" product="ISC BIND" version="9.16.1" extrainfo="Ubuntu Linux" ostype="Linux"/></port>
+<port protocol="tcp" portid="139"><state state="open"/><service name="netbios-ssn" product="Samba smbd" version="4.6.2"/></port>
+<port protocol="tcp" portid="445"><state state="open"/><service name="netbios-ssn" product="Samba smbd" version="4.6.2"/></port>
+<port protocol="tcp" portid="2121"><state state="open"/><service name="ftp"/><script id="fingerprint-strings" output="220 ProFTPD Server (InlaneFTP)"/></port>
+</ports>
+<os><osmatch name="Linux 4.15 - 5.8" accuracy="96"/></os>
+<hostscript>
+<script id="smb2-security-mode" output="Message signing enabled but not required"/>
+</hostscript>
+</host>
+</nmaprun>
