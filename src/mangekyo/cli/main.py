@@ -177,7 +177,7 @@ def _format_elapsed(elapsed: float) -> str:
 
 
 def _print_table(results: list[dict], use_color: bool,
-                 elapsed: float | None = None) -> None:
+                 elapsed: float | None = None, intensity: int = 5) -> None:
     if not results:
         print("[!] No hosts found.")
         return
@@ -223,6 +223,11 @@ def _print_table(results: list[dict], use_color: bool,
 
     print()
     _print_summary(results, elapsed)
+    for r in results:
+        hint = _version_intensity_hint(r.get("confidence_sub_scores") or {}, intensity)
+        if hint:
+            print(hint)
+            break
 
 
 def _print_summary(results: list[dict], elapsed: float | None = None) -> None:
@@ -272,11 +277,11 @@ def _print_json(results: list[dict]) -> None:
 
 
 def _emit(results: list[dict], output: str, use_color: bool,
-          elapsed: float | None = None) -> None:
+          elapsed: float | None = None, intensity: int = 5) -> None:
     if output == "json":
         _print_json(results)
     else:
-        _print_table(results, use_color, elapsed)
+        _print_table(results, use_color, elapsed, intensity)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -337,7 +342,9 @@ def _run_score(args: argparse.Namespace) -> int:
         results = results[:args.top]
 
     use_color = (not args.no_color) and sys.stdout.isatty() and args.output == "table"
-    _emit(results, args.output, use_color, time.monotonic() - start)
+    # score reads a static XML and has no --version-intensity flag, so the
+    # hint treats it as Nmap's default intensity of 5 (suggest going higher).
+    _emit(results, args.output, use_color, time.monotonic() - start, intensity=5)
     return 0
 
 
@@ -421,7 +428,8 @@ def _run_scan(args: argparse.Namespace) -> int:
         results = results[:args.top]
 
     use_color = (not args.no_color) and sys.stdout.isatty() and args.output == "table"
-    _emit(results, args.output, use_color, time.monotonic() - start)
+    _emit(results, args.output, use_color, time.monotonic() - start,
+          intensity=args.version_intensity)
     return 0
 
 
@@ -667,28 +675,50 @@ def _conf_sub_warn(label: str, score: int, max_score: int) -> str:
     return ""
 
 
-_VERSION_INTENSITY_HINT = (
-    "[!] Some services could not be identified. Try --version-intensity 9 "
-    "or scan from an unrestricted network for fuller CVE coverage."
+_MAX_VERSION_INTENSITY = 9
+
+_HINT_TRY_HIGHER = (
+    "[!] Some services could not be identified. Try a higher --version-intensity "
+    "(e.g. 7, 8, or 9) for fuller CVE coverage. Higher values are slower."
+)
+_HINT_AT_MAX = (
+    "[!] Some services could not be identified even at maximum scan intensity. "
+    "This network may be filtering Nmap probes — try scanning from a different "
+    "network for fuller CVE coverage."
 )
 
 
-def _version_intensity_hint(sub: dict) -> str | None:
-    """
-    Return the version-intensity hint when identification coverage is thin:
-    CPE Match or Version Data below 70% of its maximum. Reuses the same
-    sub-score percentage logic as the confidence warnings, so a well-
-    identified host (>= 70%) stays silent.
+def _coverage_is_thin(sub: dict) -> bool:
+    """True when CPE Match or Version Data is below 70% of its maximum.
+
+    Reuses the same sub-score percentage logic as the confidence warnings,
+    so a well-identified host (>= 70%) stays silent.
     """
     for _, key, max_score in _CONF_SUB_LABELS:
-        if key not in ("cpe", "version"):
-            continue
-        if _conf_pct(sub.get(key, 0), max_score) < 70:
-            return _VERSION_INTENSITY_HINT
-    return None
+        if key in ("cpe", "version") and _conf_pct(sub.get(key, 0), max_score) < 70:
+            return True
+    return False
 
 
-def _print_explain_table(r: dict, gte, use_color: bool, show_all_cves: bool) -> None:
+def _version_intensity_hint(sub: dict, intensity: int) -> str | None:
+    """
+    Return the version-intensity hint when identification coverage is thin
+    (CPE Match or Version Data below 70% of its maximum), otherwise None.
+
+    The wording depends on the intensity the current run actually used:
+    below the maximum, suggest raising --version-intensity; already at the
+    maximum, suggest scanning from a different network instead. A run with
+    no --version-intensity flag uses Nmap's default of 5.
+    """
+    if not _coverage_is_thin(sub):
+        return None
+    if intensity >= _MAX_VERSION_INTENSITY:
+        return _HINT_AT_MAX
+    return _HINT_TRY_HIGHER
+
+
+def _print_explain_table(r: dict, gte, use_color: bool, show_all_cves: bool,
+                         intensity: int = 5) -> None:
     host = r["host"] or "(unknown)"
     hostnames = ", ".join(r.get("hostnames", []))
     title = f"{host} ({hostnames})" if hostnames else host
@@ -713,7 +743,7 @@ def _print_explain_table(r: dict, gte, use_color: bool, show_all_cves: bool) -> 
             score_str = f"{val}/{max_score}"
             warn = _conf_sub_warn(lbl, val, max_score)
             print(f"              {lbl:<{label_w}}  {score_str}{warn}")
-        hint = _version_intensity_hint(sub)
+        hint = _version_intensity_hint(sub, intensity)
         if hint:
             print(f"              {hint}")
     print()
@@ -966,7 +996,8 @@ def _run_explain(args: argparse.Namespace) -> int:
     if args.output == "json":
         _print_explain_json(result, _gte, args.all_cves)
     else:
-        _print_explain_table(result, _gte, use_color, args.all_cves)
+        _print_explain_table(result, _gte, use_color, args.all_cves,
+                             args.version_intensity)
         print()
         print(f"Completed in {_format_elapsed(time.monotonic() - start)}")
     return 0
