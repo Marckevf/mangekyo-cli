@@ -20,6 +20,7 @@ import json
 import re
 import socket
 import sys
+import time
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
@@ -71,6 +72,9 @@ def _build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     p_scan.add_argument("target", help="IP address, CIDR range, or domain to scan")
+    p_scan.add_argument("--version-intensity", type=int, choices=range(0, 10),
+                        default=5, metavar="{0-9}",
+                        help="Nmap version detection intensity (0-9, default: 5)")
     add_common(p_scan)
 
     p_explain = subparsers.add_parser(
@@ -91,6 +95,9 @@ def _build_parser() -> argparse.ArgumentParser:
                             help="load host data from an Nmap XML file instead of running a live scan")
     p_explain.add_argument("--all-cves", action="store_true",
                             help="show every CVE found instead of just the top 10")
+    p_explain.add_argument("--version-intensity", type=int, choices=range(0, 10),
+                            default=5, metavar="{0-9}",
+                            help="Nmap version detection intensity (0-9, default: 5)")
     add_common(p_explain)
 
     p_score = subparsers.add_parser(
@@ -164,7 +171,13 @@ def _format_policy_note(r: dict) -> str:
 _MIN_COL_WIDTHS = (14, 5, 8, 12, 12, 20)
 # HOST, RISK, TIER, CONFIDENCE, OPEN PORTS, TOP SIGNALS
 
-def _print_table(results: list[dict], use_color: bool) -> None:
+def _format_elapsed(elapsed: float) -> str:
+    """Wall-clock seconds rendered for the summary line, e.g. '23s'."""
+    return f"{round(elapsed)}s"
+
+
+def _print_table(results: list[dict], use_color: bool,
+                 elapsed: float | None = None) -> None:
     if not results:
         print("[!] No hosts found.")
         return
@@ -209,16 +222,19 @@ def _print_table(results: list[dict], use_color: bool) -> None:
             print(_format_policy_note(r))
 
     print()
-    _print_summary(results)
+    _print_summary(results, elapsed)
 
 
-def _print_summary(results: list[dict]) -> None:
+def _print_summary(results: list[dict], elapsed: float | None = None) -> None:
     tier_counts = {"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0}
     for r in results:
         tier_counts[r["tier"]] = tier_counts.get(r["tier"], 0) + 1
 
     parts = ", ".join(f"{tier}: {count}" for tier, count in tier_counts.items())
-    print(f"Scanned {len(results)} host(s)  |  {parts}")
+    line = f"Scanned {len(results)} host(s)  |  {parts}"
+    if elapsed is not None:
+        line += f"  |  {_format_elapsed(elapsed)}"
+    print(line)
 
 
 def _to_json_record(r: dict) -> dict:
@@ -255,11 +271,12 @@ def _print_json(results: list[dict]) -> None:
     print(json.dumps(payload, indent=2))
 
 
-def _emit(results: list[dict], output: str, use_color: bool) -> None:
+def _emit(results: list[dict], output: str, use_color: bool,
+          elapsed: float | None = None) -> None:
     if output == "json":
         _print_json(results)
     else:
-        _print_table(results, use_color)
+        _print_table(results, use_color, elapsed)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -269,6 +286,8 @@ def _emit(results: list[dict], output: str, use_color: bool) -> None:
 def _run_score(args: argparse.Namespace) -> int:
     from .. import inference
     from .. import policy
+
+    start = time.monotonic()
 
     if args.top is not None and args.top < 1:
         print(f"[!] --top must be >= 1 (got {args.top})", file=sys.stderr)
@@ -318,7 +337,7 @@ def _run_score(args: argparse.Namespace) -> int:
         results = results[:args.top]
 
     use_color = (not args.no_color) and sys.stdout.isatty() and args.output == "table"
-    _emit(results, args.output, use_color)
+    _emit(results, args.output, use_color, time.monotonic() - start)
     return 0
 
 
@@ -333,6 +352,8 @@ def _run_scan(args: argparse.Namespace) -> int:
     from .. import inference
     from .. import policy
 
+    start = time.monotonic()
+
     if args.top is not None and args.top < 1:
         print(f"[!] --top must be >= 1 (got {args.top})", file=sys.stderr)
         return 1
@@ -346,7 +367,8 @@ def _run_scan(args: argparse.Namespace) -> int:
     # -sS requires raw-socket/admin privileges; without them Npcap reports
     # every probed port as open/tcpwrapped. -T4 keeps -sT's per-port handshake
     # overhead from making a full 1000-port scan impractically slow.
-    cmd = [nmap_path, "-Pn", "-sT", "-sV", "-T4", "-oX", "-", args.target]
+    cmd = [nmap_path, "-Pn", "-sT", "-sV", "--version-intensity",
+           str(args.version_intensity), "-T4", "-oX", "-", args.target]
     with _progress(f"Running Nmap scan on {args.target}...", args):
         try:
             proc = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
@@ -399,7 +421,7 @@ def _run_scan(args: argparse.Namespace) -> int:
         results = results[:args.top]
 
     use_color = (not args.no_color) and sys.stdout.isatty() and args.output == "table"
-    _emit(results, args.output, use_color)
+    _emit(results, args.output, use_color, time.monotonic() - start)
     return 0
 
 
@@ -629,15 +651,41 @@ _CONF_SUB_WARNINGS: dict[str, dict[tuple[int, int], str]] = {
 }
 
 
+def _conf_pct(score: int, max_score: int) -> int:
+    """A confidence sub-score as a 0-100 percentage of its maximum."""
+    return round((score / max_score) * 100) if max_score > 0 else 0
+
+
 def _conf_sub_warn(label: str, score: int, max_score: int) -> str:
     """Return ' — <warning>' for a sub-score, or '' if 90-100% (silent)."""
-    pct = round((score / max_score) * 100) if max_score > 0 else 0
+    pct = _conf_pct(score, max_score)
     if pct >= 90:
         return ""
     for (lo, hi), msg in _CONF_SUB_WARNINGS.get(label, {}).items():
         if lo <= pct <= hi:
             return f" — {msg}"
     return ""
+
+
+_VERSION_INTENSITY_HINT = (
+    "[!] Some services could not be identified. Try --version-intensity 9 "
+    "or scan from an unrestricted network for fuller CVE coverage."
+)
+
+
+def _version_intensity_hint(sub: dict) -> str | None:
+    """
+    Return the version-intensity hint when identification coverage is thin:
+    CPE Match or Version Data below 70% of its maximum. Reuses the same
+    sub-score percentage logic as the confidence warnings, so a well-
+    identified host (>= 70%) stays silent.
+    """
+    for _, key, max_score in _CONF_SUB_LABELS:
+        if key not in ("cpe", "version"):
+            continue
+        if _conf_pct(sub.get(key, 0), max_score) < 70:
+            return _VERSION_INTENSITY_HINT
+    return None
 
 
 def _print_explain_table(r: dict, gte, use_color: bool, show_all_cves: bool) -> None:
@@ -665,6 +713,9 @@ def _print_explain_table(r: dict, gte, use_color: bool, show_all_cves: bool) -> 
             score_str = f"{val}/{max_score}"
             warn = _conf_sub_warn(lbl, val, max_score)
             print(f"              {lbl:<{label_w}}  {score_str}{warn}")
+        hint = _version_intensity_hint(sub)
+        if hint:
+            print(f"              {hint}")
     print()
     print(f"OPEN PORTS  : {_format_ports(r['open_ports'], limit=20)}")
     print(f"TOP SIGNALS : {'; '.join(r['top_signals'])}")
@@ -809,6 +860,8 @@ def _run_explain(args: argparse.Namespace) -> int:
     from .. import policy
     from .. import scoring_engine as _gte
 
+    start = time.monotonic()
+
     target = args.ip
     if "/" in target or "\\" in target or target.lower().endswith(".xml"):
         print("[!] Pass a target IP/hostname, not a file path.", file=sys.stderr)
@@ -850,7 +903,8 @@ def _run_explain(args: argparse.Namespace) -> int:
 
         # Same scan profile as `mangekyo scan` (-sT connect scan needs no
         # raw-socket privileges; -sV for service/version detection).
-        cmd = [nmap_path, "-Pn", "-sT", "-sV", "-T4", "-oX", "-", target]
+        cmd = [nmap_path, "-Pn", "-sT", "-sV", "--version-intensity",
+               str(args.version_intensity), "-T4", "-oX", "-", target]
         with _progress(f"Running Nmap scan on {target}...", args):
             try:
                 proc = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
@@ -913,6 +967,8 @@ def _run_explain(args: argparse.Namespace) -> int:
         _print_explain_json(result, _gte, args.all_cves)
     else:
         _print_explain_table(result, _gte, use_color, args.all_cves)
+        print()
+        print(f"Completed in {_format_elapsed(time.monotonic() - start)}")
     return 0
 
 
