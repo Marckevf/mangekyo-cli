@@ -29,6 +29,7 @@ RUN pip install --no-cache-dir -e .
 # model.pkl is copied after pip install so changes to the model don't
 # invalidate the dependency cache layer.
 COPY model.pkl .
+COPY kev_supplement_cache.json .
 
 # ── Configuration ──────────────────────────────────────────────────────────────
 # Tell Mangekyo where to find its data directory (model.pkl, caches, config).

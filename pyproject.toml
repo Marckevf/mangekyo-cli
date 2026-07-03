@@ -11,7 +11,7 @@ dependencies = [
     "pandas",
     "numpy",
     "requests",
-    "scikit-learn",
+    "scikit-learn==1.8.0",
     "shap",
     "joblib",
     "python-dotenv",
