@@ -11,8 +11,6 @@
 
 # -- Caches --
 mitre_attack_cache.json
-kev_supplement_cache.json
-kev_cache.json
 
 # -- Databases --
 mangekyo_brain.db
