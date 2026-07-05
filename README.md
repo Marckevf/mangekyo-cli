@@ -337,7 +337,7 @@ All signals come from authoritative sources. Nothing is invented.
 
 | Variable | Description |
 |---|---|
-| `NVD_API_KEY` | NVD API key — increases rate limit from 5 to 50 req/30s |
+| `NVD_API_KEY` | NVD API key — increases rate limit from 5 to 50 req/30s. If the key is invalid or deactivated, Mangekyo prints a clear warning and automatically falls back to unauthenticated NVD access rather than silently returning incomplete results. |
 | `MANGEKYO_HOME` | Override the data directory (model, caches, config) |
 | `MANGEKYO_DEBUG` | Set to `1` for full tracebacks on errors |
 
