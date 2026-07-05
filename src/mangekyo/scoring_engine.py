@@ -63,6 +63,7 @@ import json
 import math
 import os
 import re
+import sys
 import threading
 import time
 import xml.etree.ElementTree as ET
@@ -96,6 +97,12 @@ from .config import NVD_API_KEY as _NVD_API_KEY, NVD_RATE_DELAY as _NVD_SLEEP
 # in mitre_mapper._fetch_cwe_for_cve).
 _nvd_api_lock = threading.Lock()
 _last_nvd_req = 0.0   # monotonic timestamp of the most recent NVD request dispatch
+
+# Set once NVD rejects the configured key (HTTP 404 "Invalid apiKey"); the key
+# is then dropped for the rest of the session and requests fall back to the
+# unauthenticated rate limit instead of 404ing on every call.
+_nvd_key_rejected = False
+_NVD_SLEEP_UNAUTH = 6.5
 
 # ─────────────────────────────────────────────────────────────────────────────
 # ZONE 0A: THREAT INTELLIGENCE FEEDS
@@ -141,7 +148,7 @@ def load_kev_catalog() -> None:
         else:
             _load_kev_from_file()
     except Exception as exc:
-        print(f"    [!] KEV fetch failed ({exc}) — trying local cache")
+        print(f"    [!] KEV fetch failed ({exc}) — trying local cache", file=sys.stderr)
         _load_kev_from_file()
 
 
@@ -153,10 +160,10 @@ def _load_kev_from_file() -> None:
             _KEV_SET = set(json.loads(_KEV_CACHE_FILE.read_text(encoding="utf-8")))
             print(f"    [~] KEV loaded from local cache: {len(_KEV_SET)} CVEs")
         except Exception:
-            print("    [!] KEV local cache unreadable — KEV scoring disabled")
+            print("    [!] KEV local cache unreadable — KEV scoring disabled", file=sys.stderr)
             _KEV_SET = set()
     else:
-        print("    [!] No KEV cache available — KEV scoring disabled this run")
+        print("    [!] No KEV cache available — KEV scoring disabled this run", file=sys.stderr)
         _KEV_SET = set()
 
 
@@ -203,10 +210,10 @@ def get_epss_score(cve_ids: list[str]) -> float:
                         _EPSS_CACHE[cve_id] = epss_val
                         scores.append(epss_val)
                 else:
-                    print(f"    [!] EPSS API returned {resp.status_code}")
+                    print(f"    [!] EPSS API returned {resp.status_code}", file=sys.stderr)
                 break
             except Exception as exc:
-                print(f"    [!] EPSS fetch failed: {exc}")
+                print(f"    [!] EPSS fetch failed: {exc}", file=sys.stderr)
                 break
 
     if not scores:
@@ -403,43 +410,68 @@ def get_nvd_cvss(search_term: str) -> tuple[int, list[str]]:
 
     # 3. FETCH FROM NVD API (one call at a time to respect rate limiting)
     try:
-        _hdrs = {"User-Agent": "Mangekyo-GTE/3.0"}
-        if _NVD_API_KEY:
-            _hdrs["apiKey"] = _NVD_API_KEY
-
-        # Enforce a minimum gap of _NVD_SLEEP between request dispatches across
-        # all threads. Only the gap check + remaining sleep is held under the
-        # lock (often near-zero when requests are naturally spaced by network
-        # latency); the network request runs outside it so calls can overlap.
-        global _last_nvd_req
-        with _nvd_api_lock:
-            elapsed = time.monotonic() - _last_nvd_req
-            if elapsed < _NVD_SLEEP:
-                time.sleep(_NVD_SLEEP - elapsed)
-            _last_nvd_req = time.monotonic()
+        global _last_nvd_req, _NVD_SLEEP, _nvd_key_rejected
 
         response = None
-        for attempt in range(2):
-            try:
-                response = requests.get(search_url, headers=_hdrs, timeout=25)
-                break
-            except requests.exceptions.Timeout:
-                if attempt == 0:
-                    print(f"    [!] NVD timeout — retrying in 2s...")
-                    time.sleep(2)
-                else:
-                    print(f"    [!] NVD timeout (retry) for '{cpe_23}' — defaulting to 0.")
-                    return 0, []
+        while True:
+            _hdrs = {"User-Agent": "Mangekyo-GTE/3.0"}
+            sent_key = bool(_NVD_API_KEY) and not _nvd_key_rejected
+            if sent_key:
+                _hdrs["apiKey"] = _NVD_API_KEY
 
-        if response is None:
-            return 0, []
+            # Enforce a minimum gap of _NVD_SLEEP between request dispatches
+            # across all threads. Only the gap check + remaining sleep is held
+            # under the lock (often near-zero when requests are naturally
+            # spaced by network latency); the network request runs outside it
+            # so calls can overlap.
+            with _nvd_api_lock:
+                elapsed = time.monotonic() - _last_nvd_req
+                if elapsed < _NVD_SLEEP:
+                    time.sleep(_NVD_SLEEP - elapsed)
+                _last_nvd_req = time.monotonic()
+
+            for attempt in range(2):
+                try:
+                    response = requests.get(search_url, headers=_hdrs, timeout=25)
+                    break
+                except requests.exceptions.Timeout:
+                    if attempt == 0:
+                        print(f"    [!] NVD timeout — retrying in 2s...", file=sys.stderr)
+                        time.sleep(2)
+                    else:
+                        print(f"    [!] NVD timeout (retry) for '{cpe_23}' — defaulting to 0.", file=sys.stderr)
+                        return 0, []
+
+            if response is None:
+                return 0, []
+
+            # NVD reports a rejected/deactivated API key as HTTP 404 with a
+            # "message: Invalid apiKey" response header. Warn loudly once,
+            # drop the key for the rest of the session, and retry this (and
+            # all later) requests unauthenticated at the public rate limit
+            # instead of silently 404ing everything.
+            if (sent_key and response.status_code == 404
+                    and "invalid apikey" in response.headers.get("message", "").lower()):
+                with _nvd_api_lock:
+                    if not _nvd_key_rejected:
+                        _nvd_key_rejected = True
+                        _NVD_SLEEP = _NVD_SLEEP_UNAUTH
+                        print(
+                            "[!!] NVD rejected the configured API key (HTTP 404 'Invalid apiKey').\n"
+                            "     Falling back to UNAUTHENTICATED mode for the rest of this run "
+                            f"({_NVD_SLEEP_UNAUTH}s between requests).\n"
+                            f"     Rotate NVD_API_KEY in {paths.ENV_PATH} — NVD deactivates unused or expired keys.",
+                            file=sys.stderr,
+                        )
+                continue
+            break
 
         # FIX-4: Explicit non-200 handling
         if response.status_code == 429:
-            print(f"    [!] RATE LIMITED by NVD — score defaulting to 0. Consider adding an API key.")
+            print(f"    [!] RATE LIMITED by NVD — score defaulting to 0. Consider adding an API key.", file=sys.stderr)
             return 0, []
         if response.status_code != 200:
-            print(f"    [!] NVD returned HTTP {response.status_code} for '{cpe_23}' — defaulting to 0.")
+            print(f"    [!] NVD returned HTTP {response.status_code} for '{cpe_23}' — defaulting to 0.", file=sys.stderr)
             return 0, []
 
         data     = response.json()
@@ -466,14 +498,14 @@ def get_nvd_cvss(search_term: str) -> tuple[int, list[str]]:
             print(f"    [+] NVD Score: {round(final_nvd_score, 2)} "
                   f"({'avg' if is_generic else 'max'} of {len(scores)} CVEs)")
         else:
-            print(f"    [!] No NVD entries found for '{cpe_23}'.")
+            print(f"    [!] No NVD entries found for '{cpe_23}'.", file=sys.stderr)
             final_nvd_score = 0.0
 
         save_local_score(cpe_23, final_nvd_score, cve_ids)
         return int(final_nvd_score * 10), cve_ids
 
     except Exception as exc:
-        print(f"    [!] API Error for '{cpe_23}': {exc}")
+        print(f"    [!] API Error for '{cpe_23}': {exc}", file=sys.stderr)
         return 0, []
 
 

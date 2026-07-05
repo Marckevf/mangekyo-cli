@@ -20,6 +20,7 @@ mitre_mapper.map_cves) and shapes the results for CLI output.
 
 from __future__ import annotations
 
+import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
@@ -230,8 +231,11 @@ def get_intel(host_dict: dict) -> dict:
                 try:
                     st, nvd_risk, cve_ids = future.result()
                     seen_cpes[st] = (nvd_risk, cve_ids)
-                except Exception:
-                    seen_cpes[futures[future]] = (0, [])
+                except Exception as exc:
+                    failed_term = futures[future]
+                    print(f"    [!] NVD lookup failed for '{failed_term}': "
+                          f"{type(exc).__name__}: {exc}", file=sys.stderr)
+                    seen_cpes[failed_term] = (0, [])
 
     # Second pass: aggregate per-port results using pre-fetched data.
     all_nvd: list[int] = []

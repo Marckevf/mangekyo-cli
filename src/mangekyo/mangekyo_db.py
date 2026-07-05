@@ -1,12 +1,15 @@
 import sqlite3
 import os
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from .paths import NVD_CACHE_DIR, NVD_DB_PATH
 
 DB_NAME = str(NVD_DB_PATH)
 CACHE_TTL_DAYS = 7
+# Empty results (score 0, no CVEs) expire much faster: a wrong fallback CPE or
+# a transient empty NVD response must not poison the cache for a full week.
+EMPTY_CACHE_TTL_HOURS = 1
 
 def init_db():
     """ Initializes the NVD cache database at ~/.mangekyo/nvd_cache.db. """
@@ -53,14 +56,17 @@ def get_local_score(cpe):
 
     cached_score, discovery_date, cve_ids_json = result
     cached_time = datetime.fromisoformat(str(discovery_date)).replace(tzinfo=timezone.utc)
-    age_days = (datetime.now(timezone.utc) - cached_time).days
-    if age_days > CACHE_TTL_DAYS:
+    age = datetime.now(timezone.utc) - cached_time
+    if age.days > CACHE_TTL_DAYS:
         return None
     if cve_ids_json is None:
         return None
     try:
         cve_ids = json.loads(cve_ids_json)
     except (ValueError, TypeError):
+        return None
+    # Empty results get a short TTL so they are re-checked against NVD soon.
+    if not cve_ids and age > timedelta(hours=EMPTY_CACHE_TTL_HOURS):
         return None
     return cached_score, cve_ids
 
