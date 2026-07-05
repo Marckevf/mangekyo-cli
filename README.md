@@ -31,7 +31,9 @@ Mangekyo takes an Nmap scan, enriches every open port against NVD, EPSS, CISA KE
 
 ## Installation
 
-### Docker (recommended)
+### Docker (recommended for Windows/Linux)
+
+> **Mac users:** native install (below) is recommended over Docker for live scanning (`scan` and `explain`). Docker on Mac runs Linux containers inside a VM, which adds an extra layer of network overhead on top of whatever your network already imposes.
 
 ```bash
 docker pull ghcr.io/marckevf/mangekyo-cli:latest
@@ -44,7 +46,7 @@ docker run --rm -it \
 
 The volume mount persists your NVD cache and config between runs. `model.pkl` is baked into the image — no separate download needed.
 
-Developed and tested on Windows. Untested on Mac/Linux — cross-platform paths are used throughout but behavior is not verified. Open an issue if you hit problems.
+Multi-platform image (linux/amd64, linux/arm64) — tested and confirmed working on Windows and on Apple Silicon (M-series) Mac via both Docker and native install.
 
 ### From source
 
@@ -115,6 +117,7 @@ mangekyo explain --from-xml scan.xml 45.33.32.156
 | `--top N` | scan, score | Show only the N highest-risk hosts |
 | `--no-color` | all | Plain text output, no ANSI codes |
 | `--all-cves` | score, explain | Show all CVEs instead of top 10 by EPSS |
+| `--version-intensity {0-9}` | scan, explain | Nmap service detection intensity (default: 5). Higher values are slower but more likely to succeed when scan conditions are unfavorable. |
 | `--from-xml FILE` | explain | Load host from existing Nmap XML instead of scanning live |
 | `--version` | — | Print version and exit |
 
@@ -130,7 +133,7 @@ HOST              RISK    TIER      CONFIDENCE    OPEN PORTS
 192.168.1.105     74.0    HIGH      MEDIUM (61)   22,80,443
 192.168.1.1       31.0    LOW       HIGH (88)     22,80
 
-Scanned 3 host(s)  |  CRITICAL: 1, HIGH: 1, MEDIUM: 0, LOW: 1
+Scanned 3 host(s)  |  CRITICAL: 1, HIGH: 1, MEDIUM: 0, LOW: 1  |  12s
 ```
 
 ### Risk tiers
@@ -233,6 +236,15 @@ Privilege Escalation
 }
 ```
 
+When confidence is low and coverage is thin (see Networking notes above), JSON output includes an additional `scan_quality_note` field explaining the likely cause and suggesting next steps. This field is omitted entirely when coverage is sufficient.
+
+```json
+{
+  "confidence_score": 0,
+  "scan_quality_note": "Low confidence may reflect scan conditions (network variability or target-side rate limiting) rather than a genuinely low-risk host. Consider re-running the scan or trying --version-intensity 7-9."
+}
+```
+
 ---
 
 ## Policy rules (`mangekyo.yaml`)
@@ -273,6 +285,24 @@ When a rule fires, the output records what changed and why: `policy_override: {r
 Cold-cache time is driven by NVD API latency on uncached CPEs — NVD server-side query time for some CPEs exceeds 10 seconds regardless of client configuration. Subsequent runs on the same CPEs hit the local SQLite cache (7-day TTL) and are near-instant.
 
 **Without an NVD API key**, requests are rate-limited to 5 per 30 seconds (vs 50 with a key). Runs on CVE-heavy targets will be significantly slower. Get a free key at [nvd.nist.gov](https://nvd.nist.gov/developers/request-an-api-key).
+
+---
+
+## Networking notes
+
+Live scanning (`scan` and `explain`) depends on Nmap getting timely responses from the target for each service-detection probe it sends. Against any live target — especially shared public test hosts like `scanme.nmap.org` — this can vary run to run due to network conditions, target-side rate limiting, or aggressive scan timing (`-T4`).
+
+In testing, identical commands against the same target produced different results across repeated runs: sometimes full service versions and CVE data, sometimes zero identified services. This is expected behavior for active network scanning against a shared, publicly-scanned target — not a bug in Mangekyo. When it happens, Mangekyo's confidence layer reports it honestly (low confidence, thin coverage warnings) rather than presenting an uncertain result as a confirmed finding.
+
+If you see `CPE Match 0/30` or a low Version Data score along with a `[!] Some services could not be identified` warning:
+
+```bash
+mangekyo explain <target> --version-intensity 7
+```
+
+Start at 7 rather than jumping to 9 — higher intensity sends more probes, which helps when conditions are unfavorable, but is also significantly slower. If results are still inconsistent, try re-running the scan, or use `--from-xml` with a scan file generated separately.
+
+This is a general characteristic of active network scanning, not specific to Mangekyo — it affects any tool built on Nmap.
 
 ---
 

@@ -248,6 +248,9 @@ def _to_json_record(r: dict) -> dict:
         {k: t[k] for k in ("cve_id", "technique_id", "technique_name", "tactic")}
         for t in record["attack_techniques"]
     ]
+    note = _scan_quality_note(r["confidence_score"], r.get("confidence_sub_scores") or {})
+    if note is not None:
+        record["scan_quality_note"] = note
     return record
 
 
@@ -686,35 +689,74 @@ _HINT_AT_MAX = (
     "This network may be filtering Nmap probes — try scanning from a different "
     "network for fuller CVE coverage."
 )
+_HINT_VERSION_THIN = (
+    "[!] Services were identified but some version strings are incomplete. "
+    "CVE matches may be broader than ideal. Try a higher --version-intensity "
+    "for more precise version detection."
+)
 
 
-def _coverage_is_thin(sub: dict) -> bool:
-    """True when CPE Match or Version Data is below 70% of its maximum.
-
-    Reuses the same sub-score percentage logic as the confidence warnings,
-    so a well-identified host (>= 70%) stays silent.
-    """
-    for _, key, max_score in _CONF_SUB_LABELS:
-        if key in ("cpe", "version") and _conf_pct(sub.get(key, 0), max_score) < 70:
-            return True
-    return False
+def _sub_pct(sub: dict, key: str) -> int:
+    """Percentage (0-100) for a named confidence sub-score, e.g. 'cpe' or 'version'."""
+    for _, k, max_score in _CONF_SUB_LABELS:
+        if k == key:
+            return _conf_pct(sub.get(k, 0), max_score)
+    return 100
 
 
 def _version_intensity_hint(sub: dict, intensity: int) -> str | None:
     """
-    Return the version-intensity hint when identification coverage is thin
-    (CPE Match or Version Data below 70% of its maximum), otherwise None.
+    Return a version-intensity hint when identification coverage is thin,
+    or None when both CPE Match and Version Data are at/above 70% of their
+    maximum. Threat Intel is not checked here.
 
-    The wording depends on the intensity the current run actually used:
-    below the maximum, suggest raising --version-intensity; already at the
-    maximum, suggest scanning from a different network instead. A run with
-    no --version-intensity flag uses Nmap's default of 5.
+    - CPE Match < 70%: services genuinely were not identified. Wording
+      depends on the intensity the run actually used: below the maximum,
+      suggest raising --version-intensity; already at the maximum, suggest
+      scanning from a different network instead. A run with no
+      --version-intensity flag uses Nmap's default of 5.
+    - CPE Match >= 70% but Version Data < 70%: services WERE identified,
+      just incompletely versioned — a distinct message that doesn't claim
+      identification failed.
     """
-    if not _coverage_is_thin(sub):
+    if _sub_pct(sub, "cpe") < 70:
+        if intensity >= _MAX_VERSION_INTENSITY:
+            return _HINT_AT_MAX
+        return _HINT_TRY_HIGHER
+    if _sub_pct(sub, "version") < 70:
+        return _HINT_VERSION_THIN
+    return None
+
+
+_SCAN_QUALITY_NOTE_CPE = (
+    "Low confidence may reflect scan conditions (network variability or "
+    "target-side rate limiting) rather than a genuinely low-risk host. "
+    "Consider re-running the scan or trying --version-intensity 7-9."
+)
+_SCAN_QUALITY_NOTE_VERSION = (
+    "Services were identified but version detection was incomplete, "
+    "possibly due to scan conditions. CVE matches may be less precise "
+    "than a fully-versioned scan."
+)
+
+
+def _scan_quality_note(confidence_score: int, sub: dict) -> str | None:
+    """
+    JSON-only counterpart to the version-intensity hint: gives machine
+    consumers the same "this may be scan conditions, not host risk" context
+    that table output conveys via the hint text. Only returned when
+    confidence is low (< 30) AND coverage is thin (CPE Match or Version
+    Data below 70% of its maximum, same threshold as
+    `_version_intensity_hint`); None otherwise, in which case the caller
+    omits the field entirely rather than emitting it as null.
+    """
+    if confidence_score >= 30:
         return None
-    if intensity >= _MAX_VERSION_INTENSITY:
-        return _HINT_AT_MAX
-    return _HINT_TRY_HIGHER
+    if _sub_pct(sub, "cpe") < 70:
+        return _SCAN_QUALITY_NOTE_CPE
+    if _sub_pct(sub, "version") < 70:
+        return _SCAN_QUALITY_NOTE_VERSION
+    return None
 
 
 def _print_explain_table(r: dict, gte, use_color: bool, show_all_cves: bool,
@@ -878,6 +920,9 @@ def _print_explain_json(r: dict, gte, show_all_cves: bool) -> None:
         "attack_techniques":  attack_techniques,
         "policy_override":    r["policy_override"],
     }
+    note = _scan_quality_note(r["confidence_score"], r.get("confidence_sub_scores") or {})
+    if note is not None:
+        payload["scan_quality_note"] = note
     print(json.dumps(payload, indent=2))
 
 
